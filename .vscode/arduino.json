@@ -2,5 +2,5 @@
     "configuration": "cpu=16MHzatmega328",
     "board": "arduino:avr:pro",
     "sketch": "Sim800L.ino",
-    "port": "COM3"
+    "port": "COM11"
 }
