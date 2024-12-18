@@ -1,200 +1,228 @@
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
-#include <SoftwareSerial.h>
+#include <EEPROM.h>
+#include <Keypad.h>
+#include <Wire.h>  // https://www.arduino.cc/reference/en/language/functions/communication/wire/
 
-// Constants
-const int PWRKEY = 12; // GPIO4 for power control
-String phoneNumber = "+989016888626"; // Enter your phone number here
-String message = "hi"; // Enter your message here
+#include "forcedBMX280.h"
+#include "header.h"
+//
+#define BMX_CYCLE 2000  // frequency for BMX280 readout (in ms)
+ForcedBME280Float climateSensor = ForcedBME280Float(Wire, 0x76);
+int32_t g_temperature;     // current temperature
+uint32_t g_pressure;       // current pressure
+uint32_t g_humidity;       // current humidity
+float g_temperatureFloat;  // current temperature
+float g_pressureFloat;     // current pressure
+float g_humidityFloat;     // current humidity
+//
+//
+const int sensorPin = A1;            // Analog pin connected to the sensor
+const float referenceVoltage = 1.1;  // Internal reference voltage
+const float resistorValue = 51.0;    // Resistor value in ohms
+const float maxCurrent = 0.0198;     // 20 mA
+const float minCurrent = 0.0038;     // 4 mA
+const float maxValue = 6.0;          // Maximum value corresponding to 20 mA
+const float minValue = 0.0;
+const int sesnsorupdatecountnumbers = 10;
+int sesnsorupdatecount = 0;
+String valueString = "";
+float value;
+//
+const byte ROWS = 4;  // Four rows
+const byte COLS = 4;  // Four columns
+char keys[ROWS][COLS] = {{'1', '2', '3', 'A'},
+                         {'4', '5', '6', 'B'},
+                         {'7', '8', '9', 'C'},
+                         {'*', '0', '#', 'D'}};
+byte rowPins[ROWS] = {9, 8, 7, 6};
+byte colPins[COLS] = {5, 4, 3, 2};
 
-// LCD setup
-LiquidCrystal_I2C lcd(0x27, 16, 2); // Change the address to match your LCD
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
-// Software Serial setup
-SoftwareSerial mySerial(10, 11); // RX, TX
-
-// Function declarations
-int16_t wait(char* Values, uint16_t timeout);
-void updateSerial();
-void sendSMS();
-void displayStatus(const char* status, const char* action);
-void displayAnalogReadings();
-
+// Variables
+unsigned long lastKeyPressTime = 0;
+const unsigned long timeout = 20000;
+bool inMenu = false;
+bool inValueMenu = false;
+bool inShow = false;
+int valueIndex = 0;
+const int predefinedValues[] = {1, 2, 3, 4, 6, 12, 24};
+int hourValue = 0;
+unsigned long previousMillis = 0;
+unsigned long interval;
+unsigned long HpreviousMillis = 0;  // Stores last time SMS was checked
+const long Hinterval = 150000;
 void setup() {
-  pinMode(PWRKEY, OUTPUT);
-  digitalWrite(PWRKEY, HIGH); // Ensure PWRKEY is HIGH initially
-
+  // set LED as output and turn it off
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
   Serial.begin(9600);
-  mySerial.begin(9600);
-
-  // Initialize the LCD
-  lcd.begin();
-  lcd.backlight();
-  displayStatus("Initializing", "");
-
+  mob.begin();
+  // Initialize the dis
+  dis.begin();
   // Enable internal AREF 1.1V
   analogReference(INTERNAL);
+  Wire.begin();
+  while (climateSensor.begin()) {
+    Serial.println("Waiting for sensor...");
 
-  Serial.println("hello Initializing...");
-  delay(1000);
-}
-
-void loop() {
-  if (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
-    input.trim();
-
-    if (input.indexOf("SENDSMS") > -1) {
-      Serial.println("Detect");
-      sendSMS();
-    } else {
-      mySerial.println(input);
-      updateSerial();
-    }
-  }
-  updateSerial();
-  displayAnalogReadings();
-}
-
-void updateSerial() {
-  delay(500);
-  while (Serial.available()) {
-    mySerial.write(Serial.read()); // Forward what Serial received to Software Serial Port
-  }
-  while (mySerial.available()) {
-    Serial.write(mySerial.read()); // Forward what Software Serial received to Serial Port
-  }
-}
-
-void sendSMS() {
-  displayStatus("Active", "Checking module");
-
-  // Check if the module is on
-  mySerial.println("AT");
-  int16_t response = wait("OK,ERROR", 5000);
-  updateSerial();
-
-  if (response == 0) {
-    // Module is on, turn it off
-    Serial.println("Turning off the module...");
-    displayStatus("Active", "Turning off module");
-    digitalWrite(PWRKEY, LOW);
     delay(1000);
-    updateSerial();
-    digitalWrite(PWRKEY, HIGH);
-    delay(3000); // Wait for the module to turn off
-    updateSerial();
   }
-
-  // Turn on the module
-  Serial.println("Turning on the module...");
-  displayStatus("Active", "Turning on module");
-  digitalWrite(PWRKEY, LOW);
-  delay(1000);
-  updateSerial();
-  digitalWrite(PWRKEY, HIGH);
-  delay(3000); // Wait for the module to turn on
-  updateSerial();
-
-  // Wait for SMS ready
-  response = wait("SMS Ready,ERROR", 10000);
-  updateSerial();
-  if (response != 0) {
-    Serial.println("Failed to initialize SMS mode.");
-    displayStatus("Active", "Failed to init SMS");
-    return;
-  }
-
-  // Send SMS
-  displayStatus("Active", "Sending SMS");
-  mySerial.println("AT+CMGF=1"); // Set SMS mode to text
-  delay(1000);
-  updateSerial();
-  mySerial.print("AT+CMGS=\"");
-  mySerial.print(phoneNumber);
-  mySerial.println("\"");
-  delay(1000);
-  response = wait(">,ERROR", 1000);
-  updateSerial();
-  mySerial.print(message); // Message content
-  delay(1000);
-  updateSerial();
-  mySerial.write(26); // Send Ctrl+Z to send the SMS
-  delay(5000);
-  updateSerial();
-
-  // Turn off the module
-  Serial.println("Turning off the module...");
-  displayStatus("Active", "Turning off module");
-  digitalWrite(PWRKEY, LOW);
-  delay(3000);
-  digitalWrite(PWRKEY, HIGH);
-  delay(3000);
-  displayStatus("Sleeping", "");
+  digitalWrite(LED_BUILTIN, LOW);
+  // Retrieve values from EEPROM
+  retrieveValuesFromEEPROM();
+  Serial.println(mob.phoneNumber);
+  Serial.println(hourValue);
+  Serial.println("hello Initializing...");
+  delay(500);
+  interval = hourValue * 3600000UL;  // 3600000UL
 }
 
-int16_t wait(char* Values, uint16_t timeout) {
-  uint16_t Length = strlen(Values);
-  char InputBuffer[Length + 1];
-  strcpy(InputBuffer, Values);
-  char CompareBuffer[Length + 1];
-  memset(CompareBuffer, 0, sizeof(CompareBuffer));
-  uint16_t Quantity = 1;
-  for (int16_t n = 0; n < Length; n++) {
-    if (InputBuffer[n] == ',') Quantity++;
+float mymap(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+void checksms() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+    mob.sendSMS("s1 : " + valueString + "\n" +
+                "temp : " + String(g_temperatureFloat, 1) + "\n" +
+                "airp : " + g_pressure + "\n" + "humy : " + "28");
   }
-  char* InputTokens[Quantity];
-  memset(InputTokens, 0, sizeof(InputTokens));
-  char* CompareTokens[Quantity];
-  memset(CompareTokens, 0, sizeof(CompareTokens));
-  InputTokens[0] = InputBuffer;
-  CompareTokens[0] = CompareBuffer;
-  uint16_t TokenPosition = 1;
-  for (int16_t n = 0; n < Length; n++) {
-    if (InputBuffer[n] == ',') {
-      InputBuffer[n] = 0;
-      InputTokens[TokenPosition] = &InputBuffer[n + 1];
-      CompareTokens[TokenPosition] = &CompareBuffer[n + 1];
-      TokenPosition++;
-    }
-  }
-  uint64_t timer = millis();
-  char c;
-  while (millis() - timer < timeout) {
-    while (mySerial.available()) {
-      c = mySerial.read();
-      Serial.print(c);
-      for (int16_t n = 0; n < Quantity; n++) {
-        Length = strlen(CompareTokens[n]);
-        if (c == InputTokens[n][Length]) CompareTokens[n][Length] = c;
-        else memset(CompareTokens[n], 0, Length);
-        if (!strcmp(InputTokens[n], CompareTokens[n])) return n;
+  // if (currentMillis - HpreviousMillis >= Hinterval) {
+  //   HpreviousMillis = currentMillis;
+  //   mob.checkSMS("hello" + valueString);
+  // }
+}
+void loop() {
+  checksms();
+  for (int J = 0; J < 10; J++) {
+    //
+    int sensorValue = analogRead(sensorPin);
+    float voltage = sensorValue * (referenceVoltage / 1023.0);
+    float current = voltage / resistorValue;
+    value = value + mymap(current, minCurrent, maxCurrent, minValue, maxValue);
+
+    //
+    for (int i = 0; i < 100; i++) {
+      char key = keypad.getKey();
+
+      if (key) {
+        Serial.println(key);
+        lastKeyPressTime = millis();
+        if (inMenu) {
+          handleMenu(key);
+        } else if (inValueMenu) {
+          handleValueMenu(key);
+        } else {
+          if (key == 'A') {
+            inMenu = true;
+            inShow = false;
+            mob.phoneNumber = "";
+            dis.Menu("Enter Number:");
+          } else if (key == 'B') {
+            inValueMenu = true;
+            inShow = false;
+            valueIndex = 0;
+            dis.Menu(String(predefinedValues[valueIndex]));
+          } else if (key == '*') {
+            inShow = false;
+            mob.sendSMS("s1 : " + valueString + "\n" +
+                        "temp : " + String(g_temperatureFloat, 1) + "\n" +
+                        "airp : " + g_pressure + "\n" + "humy : " + "28");
+
+          } else {
+            inShow = true;
+            dis.Show(valueString, "off", "off", String(g_temperatureFloat, 1),
+                     "28%", String(g_pressure));
+          }
+        }
       }
+
+      delay(1);
+    }
+    if (millis() - lastKeyPressTime > timeout) {
+      inShow = false;
+      dis.Off();
     }
   }
-  return -1;
-}
-
-void displayStatus(const char* status, const char* action) {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(status);
-  lcd.setCursor(0, 1);
-  lcd.print(action);
-}
-
-void displayAnalogReadings() {
-  if (digitalRead(PWRKEY) == HIGH) { // Check if the device is sleeping
-    int a1 = analogRead(A1);
-    int a2 = analogRead(A2);
-    int a3 = analogRead(A3);
-
-    lcd.setCursor(0, 1);
-    lcd.print("A:");
-    lcd.print(a1);
-    lcd.print("B:");
-    lcd.print(a2);
-    lcd.print("C:");
-    lcd.print(a3);
+  // Serial.println("Before Min " + String(value));
+  value = value / 10;
+  if (value < 0) {
+    value = 0.0;
   }
+  // Serial.println("After Min " + String(value));
+  climateSensor.takeForcedMeasurement();
+  g_pressure = climateSensor.getPressure();
+  g_temperatureFloat = climateSensor.getTemperatureCelsiusAsFloat(true);
+  valueString = String(value, 1);
+  if (inShow) {
+    Serial.println("update");
+    dis.Show(valueString, "off", "off", String(g_temperatureFloat, 1), "28%",
+             String(g_pressure));
+  }
+}
+
+void handleMenu(char key) {
+  if (key == 'B') {
+    if (mob.phoneNumber.length() > 0) {
+      mob.phoneNumber.remove(mob.phoneNumber.length() - 1);
+    }
+  } else if (key == 'C') {
+    inMenu = false;
+    dis.Menu("number saved");
+    delay(500);
+    dis.Menu(mob.phoneNumber);
+    delay(2000);
+    savephoneNumberToEEPROM();
+  } else if (key == 'D') {
+    inMenu = false;
+    dis.Menu("Cancelled");
+    delay(2000);
+  } else if (mob.phoneNumber.length() < 10 && isDigit(key)) {
+    mob.phoneNumber += key;
+  }
+  dis.Menu(mob.phoneNumber);
+}
+
+void handleValueMenu(char key) {
+  if (key == 'B') {
+    valueIndex = (valueIndex + 1) %
+                 (sizeof(predefinedValues) / sizeof(predefinedValues[0]));
+    dis.Menu(String(predefinedValues[valueIndex]));
+  } else if (key == 'C') {
+    inValueMenu = false;
+    dis.Menu("Value saved");
+    delay(500);
+    dis.Menu(String(predefinedValues[valueIndex]));
+    delay(2000);
+    saveValueToEEPROM();
+  } else if (key == 'D') {
+    inValueMenu = false;
+    dis.Menu("Cancelled");
+    delay(2000);
+  }
+}
+
+void savephoneNumberToEEPROM() {
+  for (int i = 0; i < 10; i++) {
+    EEPROM.write(i, mob.phoneNumber[i]);
+  }
+}
+
+void saveValueToEEPROM() {
+  hourValue = predefinedValues[valueIndex];
+  EEPROM.write(10, predefinedValues[valueIndex]);
+  interval = hourValue * 3600000UL;
+}
+
+void retrieveValuesFromEEPROM() {
+  char tempphoneNumber[11];
+  for (int i = 0; i < 10; i++) {
+    tempphoneNumber[i] = EEPROM.read(i);
+  }
+  tempphoneNumber[10] = '\0';
+  mob.phoneNumber = String(tempphoneNumber);
+
+  hourValue = EEPROM.read(10);
 }
